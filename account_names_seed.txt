@@ -1,0 +1,28 @@
+# Seed list for new account names.
+# When asked to "spin up new names", use this list as the reference style/seed.
+
+NoamNom
+AriTmetic
+EliGible
+ShaiFi
+Yaelocity
+Tamarathon
+Eiternal
+GideonT
+Benjitsu
+Yossified
+Moishecode
+Shlomotion
+Dovetail
+Levitated
+Yoniverse
+Amitron
+Itzabitz
+Ruthless
+Leahzer
+Miriamix
+Estheroid
+Nadavocado
+Avishift
+Zoharizon
+Simchasmash

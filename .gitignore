@@ -1,4 +1,27 @@
-# Node dependencies
+# macOS
+.DS_Store
+Thumbs.db
+
+# Local secrets (never commit)
+.env
+.env.local
+.env.*.local
+!.env.example
+secrets/
+
+# Companion repos (cloned separately)
+yggdrasil-runner/
+
+# Generated files
+generated_account_names_*.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Node
 node_modules/
 
 # Build outputs
@@ -6,20 +29,13 @@ dist/
 build/
 coverage/
 
-# Environment files
-.env
-.env.*
-!.env.example
-
 # Logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# OS/editor files
-.DS_Store
+# IDE
 .vscode/
 .idea/
 *.swp
-
