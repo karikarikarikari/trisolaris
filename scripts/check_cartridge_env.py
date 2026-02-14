@@ -30,7 +30,7 @@ def main() -> int:
 
     if ok:
         print(f"CARTRIDGE_USERNAME={user}")
-        print(f"CARTRIDGE_PASSWORD={_mask(pw)} (len={len(pw)})")
+        print(f"CARTRIDGE_PASSWORD={_mask(pw)}")
         return 0
 
     print('Tip: edit ".env.local" (it is gitignored) to add the missing values.')
