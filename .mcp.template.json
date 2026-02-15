@@ -1,0 +1,11 @@
+{
+  "servers": {
+    "example": {
+      "command": "node",
+      "args": ["/absolute/path/to/server.js"],
+      "env": {
+        "API_KEY": "${API_KEY}"
+      }
+    }
+  }
+}
