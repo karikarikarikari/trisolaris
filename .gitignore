@@ -7,8 +7,8 @@ Thumbs.db
 .env.local
 .env.*.local
 !.env.example
+.mcp.json
 secrets/
-
 # Companion repos (cloned separately)
 yggdrasil-runner/
 
