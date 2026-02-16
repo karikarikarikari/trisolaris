@@ -364,6 +364,30 @@ class GitHubClient:
             page += 1
         return all_items
 
+    def list_pull_requests(
+        self,
+        *,
+        state: str = "open",
+        head: Optional[str] = None,
+        base: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        all_items: List[Dict[str, Any]] = []
+        page = 1
+        while True:
+            params: Dict[str, Any] = {"state": state, "per_page": 100, "page": page}
+            if head:
+                params["head"] = head
+            if base:
+                params["base"] = base
+            items = self._request("GET", f"/repos/{self.repo}/pulls", params=params)
+            if not isinstance(items, list):
+                raise RuntimeError("Unexpected response for list_pull_requests")
+            all_items.extend(items)
+            if len(items) < 100:
+                break
+            page += 1
+        return all_items
+
 
 def ensure_default_files() -> None:
     ensure_dirs()
@@ -883,13 +907,18 @@ def handle_task_failure(
     returncode: int,
     timed_out: bool,
     log_file: Path,
+    failure_reason_override: Optional[str] = None,
 ) -> None:
     issue_number = int(issue["number"])
     owner = str(meta["owner"])
     attempt = int(meta.get("attempt", 0))
     max_attempts = int(meta.get("max_attempts", 3))
 
-    failure_reason = f"timeout after worker limit" if timed_out else f"runner exit code {returncode}"
+    failure_reason = (
+        failure_reason_override
+        if failure_reason_override
+        else (f"timeout after worker limit" if timed_out else f"runner exit code {returncode}")
+    )
     known_fix_hint = ""
     if log_file.exists():
         log_text = log_file.read_text(encoding="utf-8", errors="replace")
@@ -937,6 +966,37 @@ def handle_task_failure(
             ]
         ),
     )
+
+
+def completion_failure_reason(
+    client: GitHubClient,
+    meta: Dict[str, Any],
+    *,
+    output_file: Path,
+) -> Optional[str]:
+    deliverables = meta.get("deliverables", [])
+    if isinstance(deliverables, list):
+        missing: List[str] = []
+        for path in deliverables:
+            candidate = (REPO_ROOT / str(path)).resolve()
+            if not candidate.exists():
+                missing.append(str(path))
+        if missing:
+            return f"missing deliverables: {', '.join(missing)}"
+
+    owner = str(meta.get("owner", "")).strip().lower()
+    branch = str(meta.get("branch", "")).strip()
+    if owner and branch:
+        prs = client.list_pull_requests(state="all", head=f"{owner}:{branch}", base="main")
+        if not prs:
+            return f"no PR found for expected head '{owner}:{branch}' -> base 'main'"
+
+    if output_file.exists():
+        output_text = output_file.read_text(encoding="utf-8", errors="replace").lower()
+        if "not created in this run" in output_text or "could not complete" in output_text:
+            return "agent output reports incomplete execution"
+
+    return None
 
 
 def refresh_job_state(client: GitHubClient, job_issue_number: int) -> None:
@@ -1086,13 +1146,25 @@ def execute_claimed_task(client: GitHubClient, cfg: Dict[str, Any], issue: Dict[
         return
 
     if result.returncode == 0 and not result.timed_out:
-        mark_task_done_or_handoff(
-            client,
-            latest,
-            latest_meta,
-            output_file=result.output_file,
-            log_file=result.log_file,
-        )
+        completion_error = completion_failure_reason(client, latest_meta, output_file=result.output_file)
+        if completion_error:
+            handle_task_failure(
+                client,
+                latest,
+                latest_meta,
+                returncode=90,
+                timed_out=False,
+                log_file=result.log_file,
+                failure_reason_override=completion_error,
+            )
+        else:
+            mark_task_done_or_handoff(
+                client,
+                latest,
+                latest_meta,
+                output_file=result.output_file,
+                log_file=result.log_file,
+            )
     else:
         handle_task_failure(
             client,
