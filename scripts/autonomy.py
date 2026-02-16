@@ -40,6 +40,7 @@ CONFIG_PATH = AUTONOMY_DIR / "config.json"
 LOCAL_CONFIG_PATH = AUTONOMY_DIR / "local.json"
 
 META_RE = re.compile(r"<!-- AUTONOMY_META:(\{.*?\}) -->", re.DOTALL)
+UNSUPPORTED_SEARCH_FLAG_RE = re.compile(r"unexpected argument ['\"]--search['\"]", re.IGNORECASE)
 
 STATE_TO_LABEL = {
     "queued": "autonomy:queued",
@@ -97,6 +98,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         },
     },
 }
+
+_CODEX_SEARCH_FLAG_SUPPORTED: Optional[bool] = None
 
 
 @dataclass
@@ -233,6 +236,26 @@ def get_token() -> str:
     if not token:
         raise RuntimeError("Empty GitHub token from gh auth token")
     return token
+
+
+def codex_exec_supports_search_flag() -> bool:
+    global _CODEX_SEARCH_FLAG_SUPPORTED
+    if _CODEX_SEARCH_FLAG_SUPPORTED is not None:
+        return _CODEX_SEARCH_FLAG_SUPPORTED
+
+    try:
+        proc = subprocess.run(
+            ["codex", "exec", "--help"],
+            text=True,
+            capture_output=True,
+            timeout=15,
+        )
+        help_text = f"{proc.stdout}\n{proc.stderr}"
+        _CODEX_SEARCH_FLAG_SUPPORTED = "--search" in help_text
+    except Exception:
+        _CODEX_SEARCH_FLAG_SUPPORTED = False
+
+    return _CODEX_SEARCH_FLAG_SUPPORTED
 
 
 class GitHubClient:
@@ -668,7 +691,13 @@ def build_runner_command(
             str(output_file),
         ]
         if agent_cfg.get("search", False):
-            cmd.append("--search")
+            if codex_exec_supports_search_flag():
+                cmd.append("--search")
+            else:
+                print(
+                    "[autonomy] configured search=true but local codex exec does not support --search; continuing without it.",
+                    file=sys.stderr,
+                )
         model = str(agent_cfg.get("model", "")).strip()
         if model:
             cmd.extend(["--model", model])
@@ -861,6 +890,15 @@ def handle_task_failure(
     max_attempts = int(meta.get("max_attempts", 3))
 
     failure_reason = f"timeout after worker limit" if timed_out else f"runner exit code {returncode}"
+    known_fix_hint = ""
+    if log_file.exists():
+        log_text = log_file.read_text(encoding="utf-8", errors="replace")
+        if UNSUPPORTED_SEARCH_FLAG_RE.search(log_text):
+            known_fix_hint = (
+                " Detected unsupported `--search` flag in local codex CLI;"
+                " worker should auto-disable this flag now."
+            )
+            failure_reason += " (unsupported --search flag)"
     meta["last_error"] = failure_reason
     meta["updated_at"] = iso_ts()
     meta["lease_until"] = None
@@ -877,6 +915,7 @@ def handle_task_failure(
                 [
                     f"[autonomy] task run failed for `{owner}` ({failure_reason}).",
                     f"Attempt `{attempt}` of `{max_attempts}`. Re-queued.",
+                    known_fix_hint.strip(),
                     f"Log: `{log_file}`",
                 ]
             ),
@@ -893,6 +932,7 @@ def handle_task_failure(
             [
                 f"[autonomy] task exhausted retries for `{owner}` ({failure_reason}).",
                 f"Attempt `{attempt}` of `{max_attempts}`. Marked dead-letter.",
+                known_fix_hint.strip(),
                 f"Log: `{log_file}`",
             ]
         ),
