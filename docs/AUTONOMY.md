@@ -111,13 +111,15 @@ The system creates one job issue plus child task issues.
 ## Ask Workers By Mention (No Spec File)
 You can ask workers a direct question without creating a job spec:
 
-1. Open a normal issue (for example title starts with `[QUESTION]`).
+1. Open a normal issue.
 2. Mention one or more worker accounts in the issue body or comments:
    - `@salomon-shdow`
    - `@stormforge1`
    - `@karikarikarikari`
+   - Alias tags also work: `@salomon`, `@stormforge`, `@kari`
 3. Running worker loops auto-intake mentions and create per-worker autonomy tasks.
-4. For question tasks, workers reply in the original source issue thread (no PR required).
+4. Mention intake is comment-level: each new mention comment can create a new task, even in the same issue.
+5. Mention-routed tasks default to question mode: workers reply in the original source issue thread (no PR required) unless code changes are explicitly requested.
 
 ## Job Spec Format
 `depends_on` references prior task indices in the same file.
