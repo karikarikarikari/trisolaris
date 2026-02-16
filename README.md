@@ -65,6 +65,7 @@ python3 scripts/clone_yggdrasil_runner.py --repo owner/name
 - `/AGENTS.md`
 - `/CLAUDE.md`
 - `/.tasks/README.md`
+- `/docs/NEW_AGENT_ONBOARDING.md`
 - `/docs/COLLAB_WORKFLOW.md`
 - `/docs/AUTONOMY.md`
 - `/docs/GITHUB_SETUP.md`
@@ -103,6 +104,8 @@ scripts/autonomy_submit.sh .tasks/autonomy/specs/job-template.json
 Full runbook: `/docs/AUTONOMY.md`
 
 GitHub multi-account setup: `/docs/GITHUB_SETUP.md`
+
+New worker onboarding: `/docs/NEW_AGENT_ONBOARDING.md`
 
 ## License
 

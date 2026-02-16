@@ -31,6 +31,7 @@ Design choices align with official guidance:
 ## One-Time Setup (All Machines)
 Before running autonomy loops, ensure GitHub account + SSH identity are configured:
 - `/docs/GITHUB_SETUP.md`
+- `/docs/NEW_AGENT_ONBOARDING.md`
 
 1. Ensure GitHub CLI auth exists:
 ```bash

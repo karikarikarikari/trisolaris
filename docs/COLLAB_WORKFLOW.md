@@ -1,6 +1,7 @@
 # Multi-Machine Collaboration Workflow
 
 For unattended orchestration (Odin submits once, agents self-coordinate), use `/docs/AUTONOMY.md`.
+For full machine bootstrap and role startup commands, use `/docs/NEW_AGENT_ONBOARDING.md`.
 
 ## Team Mapping
 - `Odin` = human coordinator.
