@@ -18,6 +18,7 @@ import random
 import re
 import shlex
 import socket
+import ssl
 import subprocess
 import sys
 import time
@@ -244,6 +245,22 @@ def get_token() -> str:
     return token
 
 
+def build_ssl_context() -> ssl.SSLContext:
+    # Prefer explicit operator overrides, then certifi bundle, then system trust.
+    env_cafile = os.environ.get("SSL_CERT_FILE") or os.environ.get("REQUESTS_CA_BUNDLE")
+    if env_cafile:
+        cafile = Path(env_cafile).expanduser()
+        if cafile.exists():
+            return ssl.create_default_context(cafile=str(cafile))
+
+    try:
+        import certifi  # type: ignore
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
+
+
 def codex_exec_supports_search_flag() -> bool:
     global _CODEX_SEARCH_FLAG_SUPPORTED
     if _CODEX_SEARCH_FLAG_SUPPORTED is not None:
@@ -271,6 +288,7 @@ class GitHubClient:
         self.retry_attempts = retry_attempts
         self.base = "https://api.github.com"
         self.token = get_token()
+        self.ssl_context = build_ssl_context()
 
     def _request(
         self,
@@ -298,7 +316,7 @@ class GitHubClient:
         for attempt in range(1, self.retry_attempts + 1):
             req = urlrequest.Request(url, data=payload, method=method, headers=headers)
             try:
-                with urlrequest.urlopen(req, timeout=self.timeout_seconds) as response:
+                with urlrequest.urlopen(req, timeout=self.timeout_seconds, context=self.ssl_context) as response:
                     raw = response.read().decode("utf-8")
                     if not raw:
                         return {}
@@ -769,6 +787,7 @@ def renew_lease(
     *,
     expected_owner: str,
     lease_seconds: int,
+    expected_worker: Optional[str] = None,
 ) -> None:
     issue = client.get_issue(issue_number)
     meta = extract_meta(issue.get("body", ""))
@@ -777,6 +796,8 @@ def renew_lease(
     if meta.get("status") != "running":
         return
     if meta.get("owner") != expected_owner:
+        return
+    if expected_worker and meta.get("worker") != expected_worker:
         return
 
     meta["lease_until"] = iso_ts(utc_now() + timedelta(seconds=lease_seconds))
@@ -795,6 +816,7 @@ def run_process_with_heartbeat(
     cfg: Dict[str, Any],
     log_file: Path,
     output_file: Path,
+    expected_worker: Optional[str],
 ) -> ExecResult:
     timeout_seconds = int(cfg["agent_timeout_seconds"])
     heartbeat_seconds = int(cfg["heartbeat_seconds"])
@@ -840,7 +862,13 @@ def run_process_with_heartbeat(
                 return ExecResult(returncode=rc2, timed_out=timed_out, log_file=log_file, output_file=output_file)
 
             if now_mono >= next_heartbeat:
-                renew_lease(client, issue_number, expected_owner=owner, lease_seconds=lease_seconds)
+                renew_lease(
+                    client,
+                    issue_number,
+                    expected_owner=owner,
+                    lease_seconds=lease_seconds,
+                    expected_worker=expected_worker,
+                )
                 next_heartbeat = now_mono + heartbeat_seconds
 
             time.sleep(2)
@@ -855,6 +883,41 @@ def task_comment_summary(*, prefix: str, message: str, output_file: Path, log_fi
         body_lines += ["", "Summary:", output_text]
     body_lines += ["", f"Log: `{log_file}`"]
     return "\n".join(body_lines)
+
+
+def find_pull_requests_for_branch(
+    client: GitHubClient,
+    *,
+    branch: str,
+    owner_alias: str,
+    base: str,
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    checked_heads: List[str] = []
+    owner_alias_norm = owner_alias.strip().lower()
+    if owner_alias_norm:
+        alias_head = f"{owner_alias_norm}:{branch}"
+        checked_heads.append(alias_head)
+        prs = client.list_pull_requests(state="all", head=alias_head, base=base)
+        if prs:
+            return prs, checked_heads
+
+    repo_owner = client.repo.split("/", 1)[0].strip().lower()
+    if repo_owner:
+        repo_head = f"{repo_owner}:{branch}"
+        if repo_head not in checked_heads:
+            checked_heads.append(repo_head)
+            prs = client.list_pull_requests(state="all", head=repo_head, base=base)
+            if prs:
+                return prs, checked_heads
+
+    # Fallback to branch-name matching so fork/non-fork ownership differences
+    # do not dead-letter completed tasks.
+    prs = [
+        pr
+        for pr in client.list_pull_requests(state="all", base=base)
+        if str(pr.get("head", {}).get("ref", "")).strip() == branch
+    ]
+    return prs, checked_heads
 
 
 def mark_task_done_or_handoff(
@@ -997,10 +1060,13 @@ def completion_failure_reason(
 
     owner = str(meta.get("owner", "")).strip().lower()
     branch = str(meta.get("branch", "")).strip()
-    if owner and branch:
-        prs = client.list_pull_requests(state="all", head=f"{owner}:{branch}", base="main")
+    if branch:
+        prs, checked_heads = find_pull_requests_for_branch(client, branch=branch, owner_alias=owner, base="main")
         if not prs:
-            return f"no PR found for expected head '{owner}:{branch}' -> base 'main'"
+            if checked_heads:
+                checked_heads_str = ", ".join(checked_heads)
+                return f"no PR found for branch '{branch}' (checked heads: {checked_heads_str}) -> base 'main'"
+            return f"no PR found for branch '{branch}' -> base 'main'"
 
     if output_file.exists():
         output_text = output_file.read_text(encoding="utf-8", errors="replace").lower()
@@ -1099,7 +1165,15 @@ def claim_next_task_for_agent(client: GitHubClient, cfg: Dict[str, Any], agent: 
 
         updated_body = inject_meta(fresh.get("body", ""), meta)
         new_labels = transition_task_labels(labels, owner=agent, state="running")
-        updated_issue = client.update_issue(number, body=updated_body, labels=new_labels)
+        client.update_issue(number, body=updated_body, labels=new_labels)
+        updated_issue = client.get_issue(number)
+        updated_meta = extract_meta(updated_issue.get("body", ""))
+        if str(updated_meta.get("status", "")).lower() != "running":
+            continue
+        if str(updated_meta.get("owner", "")).strip().lower() != agent:
+            continue
+        if str(updated_meta.get("worker", "")).strip() != worker:
+            continue
 
         client.create_comment(
             number,
@@ -1120,6 +1194,7 @@ def execute_claimed_task(client: GitHubClient, cfg: Dict[str, Any], issue: Dict[
     meta = extract_meta(issue.get("body", ""))
     issue_number = int(issue["number"])
     task_id = str(meta.get("task_id", f"T-GH-{issue_number}"))
+    claimed_worker = str(meta.get("worker", "")).strip()
 
     prompt_file = PROMPTS_DIR / f"{task_id}-{agent}.md"
     log_file = LOGS_DIR / f"{task_id}-{agent}-{int(time.time())}.log"
@@ -1145,14 +1220,16 @@ def execute_claimed_task(client: GitHubClient, cfg: Dict[str, Any], issue: Dict[
         cfg=cfg,
         log_file=log_file,
         output_file=output_file,
+        expected_worker=claimed_worker or None,
     )
 
     latest = client.get_issue(issue_number)
     latest_meta = extract_meta(latest.get("body", ""))
-    if latest_meta.get("status") != "running":
+    latest_worker = str(latest_meta.get("worker", "")).strip()
+    if latest_meta.get("status") != "running" or (claimed_worker and latest_worker != claimed_worker):
         client.create_comment(
             issue_number,
-            "[autonomy] task finished locally but remote state is no longer running; skipping final transition.",
+            "[autonomy] task finished locally but claim is no longer active for this worker; skipping final transition.",
         )
         return
 
