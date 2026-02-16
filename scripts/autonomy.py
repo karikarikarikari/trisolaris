@@ -714,7 +714,7 @@ def build_runner_command(
         cmd: List[str] = [
             "codex",
             "exec",
-            "--full-auto",
+            "--dangerously-bypass-approvals-and-sandbox",
             "--cd",
             str(REPO_ROOT),
             "-o",
@@ -1204,17 +1204,30 @@ def run_agent_once(args: argparse.Namespace, cfg: Dict[str, Any]) -> int:
 
     task = claim_next_task_for_agent(client, cfg, agent)
     if task is None:
-        print(f"No runnable queued task for {agent}")
+        print(f"No runnable queued task for {agent}", flush=True)
         return 0
 
     execute_claimed_task(client, cfg, task, agent)
-    print(f"Processed task #{task['number']} for {agent}")
+    print(f"Processed task #{task['number']} for {agent}", flush=True)
     return 0
 
 
 def run_agent_loop(args: argparse.Namespace, cfg: Dict[str, Any]) -> int:
     while True:
-        run_agent_once(args, cfg)
+        try:
+            run_agent_once(args, cfg)
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            if not args.loop:
+                raise
+            print(
+                f"[autonomy] run-agent loop error for {args.agent}: {exc!r}. Retrying after backoff.",
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(max(5, int(cfg["poll_seconds"])))
+            continue
         if not args.loop:
             return 0
         base = int(cfg["poll_seconds"])
