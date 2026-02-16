@@ -1,5 +1,7 @@
 # Multi-Machine Collaboration Workflow
 
+For unattended orchestration (Odin submits once, agents self-coordinate), use `/docs/AUTONOMY.md`.
+
 ## Team Mapping
 - `Odin` = human coordinator.
 - `Salomon` = Codex worker.

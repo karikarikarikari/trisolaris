@@ -1,0 +1,37 @@
+{
+  "title": "Flowers and Deer Research",
+  "brief": "Run parallel research tasks for Kari and Stormforge, then Salomon synthesizes final notes for Odin.",
+  "priority": "P2",
+  "tasks": [
+    {
+      "owner": "kari",
+      "title": "Research flowers",
+      "objective": "Create a concise educational flowers brief with key examples and care basics.",
+      "deliverables": [
+        "docs/research/flowers.md"
+      ],
+      "depends_on": []
+    },
+    {
+      "owner": "stormforge",
+      "title": "Research deer",
+      "objective": "Create a concise educational deer brief with species overview, habitat, and behavior basics.",
+      "deliverables": [
+        "docs/research/deer.md"
+      ],
+      "depends_on": []
+    },
+    {
+      "owner": "salomon",
+      "title": "Synthesize flowers+deer brief",
+      "objective": "Review both research outputs and produce a consolidated summary for Odin.",
+      "deliverables": [
+        "docs/research/flowers-deer-summary.md"
+      ],
+      "depends_on": [
+        1,
+        2
+      ]
+    }
+  ]
+}

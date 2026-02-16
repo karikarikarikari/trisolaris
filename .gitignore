@@ -9,6 +9,9 @@ Thumbs.db
 !.env.example
 .mcp.json
 secrets/
+# Local autonomy overrides/runtime
+.tasks/autonomy/local.json
+.tasks/autonomy/runtime/
 # Companion repos (cloned separately)
 yggdrasil-runner/
 

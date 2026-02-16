@@ -23,3 +23,16 @@ Use this folder as the shared async control plane for all workers.
 Only one active owner per task. Reassign only with a handoff note.
 
 Allowed owner values: `salomon`, `stormforge`, `kari`, `odin`.
+
+## Autonomous Mode
+For unattended coordination, use GitHub Issues as source of truth via `scripts/autonomy.py`.
+
+- Config: `/.tasks/autonomy/config.json`
+- Job specs: `/.tasks/autonomy/specs/*.json`
+- Runtime artifacts (gitignored): `/.tasks/autonomy/runtime/`
+- Operator runbook: `/docs/AUTONOMY.md`
+
+Board files (`in-progress.md`, `done.md`) can be regenerated from issue state:
+```sh
+python3 scripts/autonomy.py sync-board
+```

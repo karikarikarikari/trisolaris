@@ -66,6 +66,8 @@ python3 scripts/clone_yggdrasil_runner.py --repo owner/name
 - `/CLAUDE.md`
 - `/.tasks/README.md`
 - `/docs/COLLAB_WORKFLOW.md`
+- `/docs/AUTONOMY.md`
+- `/docs/GITHUB_SETUP.md`
 - `/.mcp.template.json`
 
 ### Quick Start
@@ -74,6 +76,33 @@ python3 scripts/clone_yggdrasil_runner.py --repo owner/name
 3. Create tasks from `/.tasks/templates/task.md`.
 4. Track active work in `/.tasks/in-progress.md`.
 5. Use handoff notes from `/.tasks/templates/handoff.md` when changing owner.
+
+## Autonomous Mode (No Manual Relay)
+
+Use GitHub Issues as the control plane so agents coordinate without editing shared board files directly.
+
+1. Bootstrap labels and config:
+```sh
+scripts/autonomy_bootstrap.sh
+```
+2. Start supervisor loop on Odin machine:
+```sh
+scripts/autonomy_supervisor_loop.sh
+```
+3. Start worker loops:
+```sh
+scripts/autonomy_agent_loop.sh salomon
+scripts/autonomy_agent_loop.sh stormforge
+scripts/autonomy_agent_loop.sh kari
+```
+4. Submit a job from JSON spec:
+```sh
+scripts/autonomy_submit.sh .tasks/autonomy/specs/job-template.json
+```
+
+Full runbook: `/docs/AUTONOMY.md`
+
+GitHub multi-account setup: `/docs/GITHUB_SETUP.md`
 
 ## License
 

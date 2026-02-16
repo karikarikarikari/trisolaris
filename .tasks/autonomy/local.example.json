@@ -1,0 +1,8 @@
+{
+  "agents": {
+    "kari": {
+      "runner": "shell",
+      "command": "echo 'replace with your Claude/EGU command using {prompt_file} and {output_file}' >&2; exit 2"
+    }
+  }
+}

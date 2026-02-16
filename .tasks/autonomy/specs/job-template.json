@@ -1,0 +1,37 @@
+{
+  "title": "Replace with job title",
+  "brief": "Goal and constraints from Odin.",
+  "priority": "P2",
+  "tasks": [
+    {
+      "owner": "kari",
+      "title": "Research flowers",
+      "objective": "Produce a concise flowers brief.",
+      "deliverables": [
+        "docs/research/flowers.md"
+      ],
+      "depends_on": []
+    },
+    {
+      "owner": "stormforge",
+      "title": "Research deer",
+      "objective": "Produce a concise deer brief.",
+      "deliverables": [
+        "docs/research/deer.md"
+      ],
+      "depends_on": []
+    },
+    {
+      "owner": "salomon",
+      "title": "Synthesize final package",
+      "objective": "Review both outputs and prepare final consolidated report.",
+      "deliverables": [
+        "docs/research/final-brief.md"
+      ],
+      "depends_on": [
+        1,
+        2
+      ]
+    }
+  ]
+}
