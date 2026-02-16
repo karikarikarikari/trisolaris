@@ -108,6 +108,17 @@ scripts/autonomy_submit.sh .tasks/autonomy/specs/my-job.json
 
 The system creates one job issue plus child task issues.
 
+## Ask Workers By Mention (No Spec File)
+You can ask workers a direct question without creating a job spec:
+
+1. Open a normal issue (for example title starts with `[QUESTION]`).
+2. Mention one or more worker accounts in the issue body or comments:
+   - `@salomon-shdow`
+   - `@stormforge1`
+   - `@karikarikarikari`
+3. Running worker loops auto-intake mentions and create per-worker autonomy tasks.
+4. For question tasks, workers reply in the original source issue thread (no PR required).
+
 ## Job Spec Format
 `depends_on` references prior task indices in the same file.
 

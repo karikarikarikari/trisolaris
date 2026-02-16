@@ -78,6 +78,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "agent_timeout_seconds": 1800,
     "api_timeout_seconds": 30,
     "api_retry_attempts": 5,
+    "agent_handles": {
+        "salomon": "salomon-shdow",
+        "stormforge": "stormforge1",
+        "kari": "karikarikarikari",
+    },
     "agents": {
         "salomon": {
             "runner": "codex",
@@ -388,6 +393,20 @@ class GitHubClient:
             page += 1
         return all_items
 
+    def list_issue_comments(self, issue_number: int) -> List[Dict[str, Any]]:
+        all_items: List[Dict[str, Any]] = []
+        page = 1
+        while True:
+            params: Dict[str, Any] = {"per_page": 100, "page": page}
+            items = self._request("GET", f"/repos/{self.repo}/issues/{issue_number}/comments", params=params)
+            if not isinstance(items, list):
+                raise RuntimeError("Unexpected response for list_issue_comments")
+            all_items.extend(items)
+            if len(items) < 100:
+                break
+            page += 1
+        return all_items
+
     def list_pull_requests(
         self,
         *,
@@ -461,16 +480,38 @@ def build_task_body(
     priority: str,
     max_attempts: int,
     next_owner: Optional[str],
+    mode: str = "standard",
+    requires_pr: bool = True,
+    source_issue: Optional[int] = None,
 ) -> str:
     dep_lines = [f"- #{number}" for number in depends_on] or ["- none"]
     deliv_lines = [f"- `{path}`" for path in deliverables] or ["- none specified"]
+    parent_job_line = f"Parent Job: #{job_number}" if int(job_number) > 0 else "Parent Job: none (mention intake)"
+    notes_lines: List[str] = ["## Notes"]
+    if mode == "question":
+        notes_lines.extend(
+            [
+                "- This is a question-response task.",
+                "- Worker should answer in the source issue thread.",
+                "- PR is not required unless explicitly requested.",
+            ]
+        )
+    else:
+        notes_lines.extend(
+            [
+                "- Worker should commit and open a PR against `main`.",
+                "- Worker should post concise summary in issue comments.",
+            ]
+        )
+    if source_issue and int(source_issue) > 0:
+        notes_lines.append(f"- Source issue: #{int(source_issue)}")
 
     body = "\n".join(
         [
             "# Autonomous Task",
             "",
             f"Task ID: `{task_id}`",
-            f"Parent Job: #{job_number}",
+            parent_job_line,
             f"Owner: `{owner}`",
             f"Priority: `{priority}`",
             f"Branch: `{branch}`",
@@ -484,9 +525,7 @@ def build_task_body(
             "## Dependencies",
             *dep_lines,
             "",
-            "## Notes",
-            "- Worker should commit and open a PR against `main`.",
-            "- Worker should post concise summary in issue comments.",
+            *notes_lines,
         ]
     )
 
@@ -506,8 +545,107 @@ def build_task_body(
         "depends_on": list(depends_on),
         "next_owner": next_owner,
         "branch": branch,
+        "mode": mode,
+        "requires_pr": bool(requires_pr),
+        "source_issue": int(source_issue) if source_issue else 0,
     }
     return inject_meta(body, meta)
+
+
+def agent_github_login(cfg: Dict[str, Any], agent: str) -> str:
+    configured = cfg.get("agent_handles", {})
+    if isinstance(configured, dict):
+        value = configured.get(agent)
+        if value:
+            return str(value).strip().lower()
+    return agent
+
+
+def issue_mentions_login(client: GitHubClient, issue: Dict[str, Any], login: str) -> bool:
+    needle = f"@{login.lower()}"
+    title_body = f"{issue.get('title', '')}\n{issue.get('body', '')}".lower()
+    if needle in title_body:
+        return True
+    for comment in client.list_issue_comments(int(issue["number"])):
+        if needle in str(comment.get("body", "")).lower():
+            return True
+    return False
+
+
+def spawn_mention_task_for_agent(client: GitHubClient, cfg: Dict[str, Any], agent: str) -> Optional[Dict[str, Any]]:
+    login = agent_github_login(cfg, agent)
+    existing_tasks = client.list_issues(state="open", labels=["autonomy:task", f"agent:{agent}"]) + client.list_issues(
+        state="closed", labels=["autonomy:task", f"agent:{agent}"]
+    )
+    existing_sources: set[int] = set()
+    for task_issue in existing_tasks:
+        meta = extract_meta(task_issue.get("body", ""))
+        if meta.get("type") != "task":
+            continue
+        source_issue = int(meta.get("source_issue", 0))
+        if source_issue > 0:
+            existing_sources.add(source_issue)
+
+    open_issues = client.list_issues(state="open")
+    for issue in sorted(open_issues, key=lambda item: int(item["number"])):
+        issue_number = int(issue["number"])
+        labels = {label["name"] for label in issue.get("labels", [])}
+        if any(label.startswith("autonomy:") for label in labels):
+            continue
+        if issue_number in existing_sources:
+            continue
+        if not issue_mentions_login(client, issue, login):
+            continue
+
+        title = str(issue.get("title", f"Issue #{issue_number}")).strip()
+        mode = "question" if "question" in title.lower() else "standard"
+        task_title = f"[AUTONOMY TASK] Reply to mention in #{issue_number}: {short_text(title, limit=80)}"
+        source_url = issue.get("html_url", f"https://github.com/{cfg['repo']}/issues/{issue_number}")
+        objective = "\n".join(
+            [
+                f"Read and respond to issue #{issue_number} in the same issue thread.",
+                f"Source URL: {source_url}",
+                f"Mention target: @{login}",
+                "Provide a concise direct answer.",
+            ]
+        )
+        task_body = build_task_body(
+            job_number=0,
+            owner=agent,
+            title=task_title,
+            objective=objective,
+            deliverables=[],
+            depends_on=[],
+            task_id=f"T-GH-MENTION-{issue_number}",
+            branch=f"autonomy/{agent}-gh-{issue_number}-{slugify(title)}",
+            priority=priority_label("p2"),
+            max_attempts=int(cfg["max_attempts"]),
+            next_owner=None,
+            mode=mode,
+            requires_pr=(mode != "question"),
+            source_issue=issue_number,
+        )
+        created = client.create_issue(
+            title=task_title,
+            body=task_body,
+            labels=["autonomy:task", "autonomy:queued", f"agent:{agent}", "priority:p2"],
+        )
+
+        created_number = int(created["number"])
+        created_meta = extract_meta(created.get("body", ""))
+        created_meta["task_id"] = f"T-GH-{created_number}"
+        created_meta["updated_at"] = iso_ts()
+        patched_body = inject_meta(created.get("body", ""), created_meta)
+        patched_body = patched_body.replace(f"`T-GH-MENTION-{issue_number}`", f"`T-GH-{created_number}`")
+        client.update_issue(created_number, body=patched_body)
+
+        client.create_comment(
+            issue_number,
+            f"[autonomy] Mention for @{login} routed to task #{created_number} ({mode} mode).",
+        )
+        return client.get_issue(created_number)
+
+    return None
 
 
 def parse_spec(path: Path) -> Dict[str, Any]:
@@ -691,6 +829,30 @@ def task_prompt(issue: Dict[str, Any], meta: Dict[str, Any], *, agent: str, repo
     branch = meta.get("branch", f"autonomy/{agent}-gh-{issue['number']}")
     deliverables = meta.get("deliverables", [])
     deliverable_lines = "\n".join([f"- {path}" for path in deliverables]) or "- follow task issue details"
+    mode = str(meta.get("mode", "standard")).strip().lower()
+    source_issue = int(meta.get("source_issue", 0))
+
+    if mode == "question" and source_issue > 0:
+        return "\n".join(
+            [
+                f"You are agent '{agent}'.",
+                f"Repository: {repo}",
+                f"Task issue: #{issue['number']} ({issue['title']})",
+                f"Source issue to answer: #{source_issue}",
+                f"Task ID: {task_id}",
+                "",
+                "Goal:",
+                issue.get("body", "").strip(),
+                "",
+                "Execution requirements:",
+                "1) Read the source issue and any relevant comments.",
+                f"2) Post a concise answer in source issue #{source_issue} using `gh issue comment`.",
+                "3) Do not create branches/commits/PRs unless source issue explicitly requests code changes.",
+                "4) In your final response, include the posted answer and comment URL.",
+                "",
+                "Be concise and execution-focused.",
+            ]
+        )
 
     return "\n".join(
         [
@@ -1044,10 +1206,37 @@ def handle_task_failure(
 
 def completion_failure_reason(
     client: GitHubClient,
+    cfg: Dict[str, Any],
+    issue: Dict[str, Any],
     meta: Dict[str, Any],
     *,
     output_file: Path,
 ) -> Optional[str]:
+    mode = str(meta.get("mode", "standard")).strip().lower()
+    if mode == "question":
+        source_issue = int(meta.get("source_issue", 0))
+        if source_issue <= 0:
+            return "question task missing source_issue metadata"
+        source = client.get_issue(source_issue)
+        before = int(meta.get("source_comments_before", -1))
+        if before >= 0 and int(source.get("comments", 0)) <= before:
+            return f"no new comment detected on source issue #{source_issue}"
+        expected_login = agent_github_login(cfg, str(meta.get("owner", "")).strip().lower())
+        claimed_at = str(meta.get("claimed_at", "")).strip()
+        comments = client.list_issue_comments(source_issue)
+        matched = False
+        for comment in comments:
+            author = str(comment.get("user", {}).get("login", "")).strip().lower()
+            created_at = str(comment.get("created_at", "")).strip()
+            if author != expected_login:
+                continue
+            if claimed_at and created_at and created_at < claimed_at:
+                continue
+            matched = True
+            break
+        if not matched:
+            return f"no reply comment by @{expected_login} detected on source issue #{source_issue}"
+
     deliverables = meta.get("deliverables", [])
     if isinstance(deliverables, list):
         missing: List[str] = []
@@ -1060,7 +1249,8 @@ def completion_failure_reason(
 
     owner = str(meta.get("owner", "")).strip().lower()
     branch = str(meta.get("branch", "")).strip()
-    if branch:
+    requires_pr = bool(meta.get("requires_pr", True))
+    if requires_pr and branch:
         prs, checked_heads = find_pull_requests_for_branch(client, branch=branch, owner_alias=owner, base="main")
         if not prs:
             if checked_heads:
@@ -1161,6 +1351,12 @@ def claim_next_task_for_agent(client: GitHubClient, cfg: Dict[str, Any], agent: 
         meta["attempt"] = attempt
         meta["worker"] = worker
         meta["lease_until"] = iso_ts(utc_now() + timedelta(seconds=int(cfg["lease_seconds"])))
+        meta["claimed_at"] = iso_ts()
+        if str(meta.get("mode", "standard")).strip().lower() == "question":
+            source_issue = int(meta.get("source_issue", 0))
+            if source_issue > 0:
+                source = client.get_issue(source_issue)
+                meta["source_comments_before"] = int(source.get("comments", 0))
         meta["updated_at"] = iso_ts()
 
         updated_body = inject_meta(fresh.get("body", ""), meta)
@@ -1234,7 +1430,7 @@ def execute_claimed_task(client: GitHubClient, cfg: Dict[str, Any], issue: Dict[
         return
 
     if result.returncode == 0 and not result.timed_out:
-        completion_error = completion_failure_reason(client, latest_meta, output_file=result.output_file)
+        completion_error = completion_failure_reason(client, cfg, latest, latest_meta, output_file=result.output_file)
         if completion_error:
             handle_task_failure(
                 client,
@@ -1280,6 +1476,10 @@ def run_agent_once(args: argparse.Namespace, cfg: Dict[str, Any]) -> int:
     )
 
     task = claim_next_task_for_agent(client, cfg, agent)
+    if task is None:
+        spawned = spawn_mention_task_for_agent(client, cfg, agent)
+        if spawned is not None:
+            task = claim_next_task_for_agent(client, cfg, agent)
     if task is None:
         print(f"No runnable queued task for {agent}", flush=True)
         return 0
