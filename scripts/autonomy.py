@@ -83,18 +83,24 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "model": "",
             "extra_args": [],
             "search": True,
+            "sandbox": "danger-full-access",
+            "inherit_env": True,
         },
         "stormforge": {
             "runner": "codex",
             "model": "",
             "extra_args": [],
             "search": True,
+            "sandbox": "danger-full-access",
+            "inherit_env": True,
         },
         "kari": {
             "runner": "codex",
             "model": "",
             "extra_args": [],
             "search": True,
+            "sandbox": "danger-full-access",
+            "inherit_env": True,
         },
     },
 }
@@ -714,6 +720,11 @@ def build_runner_command(
             "-o",
             str(output_file),
         ]
+        sandbox_mode = str(agent_cfg.get("sandbox", "")).strip()
+        if sandbox_mode:
+            cmd.extend(["--sandbox", sandbox_mode])
+        if bool(agent_cfg.get("inherit_env", False)):
+            cmd.extend(["-c", "shell_environment_policy.inherit=all"])
         if agent_cfg.get("search", False):
             if codex_exec_supports_search_flag():
                 cmd.append("--search")
