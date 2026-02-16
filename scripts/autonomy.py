@@ -42,6 +42,7 @@ LOCAL_CONFIG_PATH = AUTONOMY_DIR / "local.json"
 
 META_RE = re.compile(r"<!-- AUTONOMY_META:(\{.*?\}) -->", re.DOTALL)
 UNSUPPORTED_SEARCH_FLAG_RE = re.compile(r"unexpected argument ['\"]--search['\"]", re.IGNORECASE)
+MENTION_RE = re.compile(r"(?<![A-Za-z0-9_-])@([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))")
 
 STATE_TO_LABEL = {
     "queued": "autonomy:queued",
@@ -82,6 +83,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "salomon": "salomon-shdow",
         "stormforge": "stormforge1",
         "kari": "karikarikarikari",
+    },
+    "agent_aliases": {
+        "salomon": ["salomon"],
+        "stormforge": ["stormforge"],
+        "kari": ["kari"],
     },
     "agents": {
         "salomon": {
@@ -483,6 +489,8 @@ def build_task_body(
     mode: str = "standard",
     requires_pr: bool = True,
     source_issue: Optional[int] = None,
+    source_comment_id: Optional[int] = None,
+    source_comment_url: Optional[str] = None,
 ) -> str:
     dep_lines = [f"- #{number}" for number in depends_on] or ["- none"]
     deliv_lines = [f"- `{path}`" for path in deliverables] or ["- none specified"]
@@ -505,6 +513,10 @@ def build_task_body(
         )
     if source_issue and int(source_issue) > 0:
         notes_lines.append(f"- Source issue: #{int(source_issue)}")
+    if source_comment_id and int(source_comment_id) > 0:
+        notes_lines.append(f"- Source comment id: `{int(source_comment_id)}`")
+    if source_comment_url:
+        notes_lines.append(f"- Source comment URL: {source_comment_url}")
 
     body = "\n".join(
         [
@@ -548,6 +560,8 @@ def build_task_body(
         "mode": mode,
         "requires_pr": bool(requires_pr),
         "source_issue": int(source_issue) if source_issue else 0,
+        "source_comment_id": int(source_comment_id) if source_comment_id else 0,
+        "source_comment_url": str(source_comment_url or "").strip(),
     }
     return inject_meta(body, meta)
 
@@ -561,30 +575,89 @@ def agent_github_login(cfg: Dict[str, Any], agent: str) -> str:
     return agent
 
 
-def issue_mentions_login(client: GitHubClient, issue: Dict[str, Any], login: str) -> bool:
-    needle = f"@{login.lower()}"
-    title_body = f"{issue.get('title', '')}\n{issue.get('body', '')}".lower()
-    if needle in title_body:
-        return True
-    for comment in client.list_issue_comments(int(issue["number"])):
-        if needle in str(comment.get("body", "")).lower():
-            return True
-    return False
+def normalize_handle(value: str) -> str:
+    return str(value).strip().lower().lstrip("@")
+
+
+def extract_mentions(text: str) -> set[str]:
+    mentions: set[str] = set()
+    raw = str(text or "")
+    for match in MENTION_RE.finditer(raw):
+        mentions.add(match.group(1).lower())
+    return mentions
+
+
+def agent_mention_handles(cfg: Dict[str, Any], agent: str) -> set[str]:
+    handles: set[str] = set()
+
+    def add_variant(value: str) -> None:
+        token = normalize_handle(value)
+        if not token:
+            return
+        handles.add(token)
+        stripped_digits = re.sub(r"\d+$", "", token)
+        if stripped_digits:
+            handles.add(stripped_digits)
+        if "-" in token:
+            prefix = token.split("-", 1)[0]
+            if prefix:
+                handles.add(prefix)
+
+    add_variant(agent)
+    add_variant(agent_github_login(cfg, agent))
+
+    aliases_cfg = cfg.get("agent_aliases", {})
+    aliases = aliases_cfg.get(agent, []) if isinstance(aliases_cfg, dict) else []
+    if isinstance(aliases, list):
+        for alias in aliases:
+            add_variant(str(alias))
+    elif aliases:
+        add_variant(str(aliases))
+
+    return {token for token in handles if token}
+
+
+def source_entries_for_issue(issue: Dict[str, Any], comments: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    entries: List[Dict[str, Any]] = [
+        {
+            "comment_id": 0,
+            "body": str(issue.get("body", "")),
+            "url": str(issue.get("html_url", "")),
+            "author_login": str(issue.get("user", {}).get("login", "")).strip().lower(),
+            "author_type": str(issue.get("user", {}).get("type", "")).strip().lower(),
+        }
+    ]
+    for comment in sorted(comments, key=lambda item: int(item.get("id", 0))):
+        comment_id = int(comment.get("id", 0))
+        if comment_id <= 0:
+            continue
+        entries.append(
+            {
+                "comment_id": comment_id,
+                "body": str(comment.get("body", "")),
+                "url": str(comment.get("html_url", "")),
+                "author_login": str(comment.get("user", {}).get("login", "")).strip().lower(),
+                "author_type": str(comment.get("user", {}).get("type", "")).strip().lower(),
+            }
+        )
+    return entries
 
 
 def spawn_mention_task_for_agent(client: GitHubClient, cfg: Dict[str, Any], agent: str) -> Optional[Dict[str, Any]]:
     login = agent_github_login(cfg, agent)
+    mention_handles = agent_mention_handles(cfg, agent)
     existing_tasks = client.list_issues(state="open", labels=["autonomy:task", f"agent:{agent}"]) + client.list_issues(
         state="closed", labels=["autonomy:task", f"agent:{agent}"]
     )
-    existing_sources: set[int] = set()
+    existing_sources: set[Tuple[int, int]] = set()
     for task_issue in existing_tasks:
         meta = extract_meta(task_issue.get("body", ""))
         if meta.get("type") != "task":
             continue
         source_issue = int(meta.get("source_issue", 0))
+        source_comment_id = int(meta.get("source_comment_id", 0))
         if source_issue > 0:
-            existing_sources.add(source_issue)
+            existing_sources.add((source_issue, source_comment_id))
 
     open_issues = client.list_issues(state="open")
     for issue in sorted(open_issues, key=lambda item: int(item["number"])):
@@ -592,58 +665,79 @@ def spawn_mention_task_for_agent(client: GitHubClient, cfg: Dict[str, Any], agen
         labels = {label["name"] for label in issue.get("labels", [])}
         if any(label.startswith("autonomy:") for label in labels):
             continue
-        if issue_number in existing_sources:
-            continue
-        if not issue_mentions_login(client, issue, login):
-            continue
+        comments = client.list_issue_comments(issue_number)
+        for source in source_entries_for_issue(issue, comments):
+            source_comment_id = int(source.get("comment_id", 0))
+            if (issue_number, source_comment_id) in existing_sources:
+                continue
 
-        title = str(issue.get("title", f"Issue #{issue_number}")).strip()
-        mode = "question" if "question" in title.lower() else "standard"
-        task_title = f"[AUTONOMY TASK] Reply to mention in #{issue_number}: {short_text(title, limit=80)}"
-        source_url = issue.get("html_url", f"https://github.com/{cfg['repo']}/issues/{issue_number}")
-        objective = "\n".join(
-            [
-                f"Read and respond to issue #{issue_number} in the same issue thread.",
-                f"Source URL: {source_url}",
-                f"Mention target: @{login}",
-                "Provide a concise direct answer.",
-            ]
-        )
-        task_body = build_task_body(
-            job_number=0,
-            owner=agent,
-            title=task_title,
-            objective=objective,
-            deliverables=[],
-            depends_on=[],
-            task_id=f"T-GH-MENTION-{issue_number}",
-            branch=f"autonomy/{agent}-gh-{issue_number}-{slugify(title)}",
-            priority=priority_label("p2"),
-            max_attempts=int(cfg["max_attempts"]),
-            next_owner=None,
-            mode=mode,
-            requires_pr=(mode != "question"),
-            source_issue=issue_number,
-        )
-        created = client.create_issue(
-            title=task_title,
-            body=task_body,
-            labels=["autonomy:task", "autonomy:queued", f"agent:{agent}", "priority:p2"],
-        )
+            source_body = str(source.get("body", "")).strip()
+            if not source_body:
+                continue
+            if source_body.lower().startswith("[autonomy]"):
+                continue
+            if str(source.get("author_type", "")).strip().lower() == "bot":
+                continue
 
-        created_number = int(created["number"])
-        created_meta = extract_meta(created.get("body", ""))
-        created_meta["task_id"] = f"T-GH-{created_number}"
-        created_meta["updated_at"] = iso_ts()
-        patched_body = inject_meta(created.get("body", ""), created_meta)
-        patched_body = patched_body.replace(f"`T-GH-MENTION-{issue_number}`", f"`T-GH-{created_number}`")
-        client.update_issue(created_number, body=patched_body)
+            mentions = extract_mentions(source_body)
+            if not mentions.intersection(mention_handles):
+                continue
 
-        client.create_comment(
-            issue_number,
-            f"[autonomy] Mention for @{login} routed to task #{created_number} ({mode} mode).",
-        )
-        return client.get_issue(created_number)
+            title = str(issue.get("title", f"Issue #{issue_number}")).strip()
+            task_title = f"[AUTONOMY TASK] Reply to mention in #{issue_number}: {short_text(title, limit=80)}"
+            source_url = str(
+                source.get("url") or issue.get("html_url", f"https://github.com/{cfg['repo']}/issues/{issue_number}")
+            )
+            objective = "\n".join(
+                [
+                    f"Read and respond to issue #{issue_number} in the same issue thread.",
+                    f"Mention source: {source_url}",
+                    f"Mention target login: {login}",
+                    f"Accepted mention handles: {', '.join(sorted(mention_handles))}",
+                    "Provide a concise direct answer.",
+                ]
+            )
+            task_body = build_task_body(
+                job_number=0,
+                owner=agent,
+                title=task_title,
+                objective=objective,
+                deliverables=[],
+                depends_on=[],
+                task_id=f"T-GH-MENTION-{issue_number}-{source_comment_id}",
+                branch=f"autonomy/{agent}-gh-{issue_number}-{slugify(title)}",
+                priority=priority_label("p2"),
+                max_attempts=int(cfg["max_attempts"]),
+                next_owner=None,
+                mode="question",
+                requires_pr=False,
+                source_issue=issue_number,
+                source_comment_id=source_comment_id,
+                source_comment_url=source_url,
+            )
+            created = client.create_issue(
+                title=task_title,
+                body=task_body,
+                labels=["autonomy:task", "autonomy:queued", f"agent:{agent}", "priority:p2"],
+            )
+
+            created_number = int(created["number"])
+            created_meta = extract_meta(created.get("body", ""))
+            created_meta["task_id"] = f"T-GH-{created_number}"
+            created_meta["updated_at"] = iso_ts()
+            patched_body = inject_meta(created.get("body", ""), created_meta)
+            patched_body = patched_body.replace(
+                f"`T-GH-MENTION-{issue_number}-{source_comment_id}`",
+                f"`T-GH-{created_number}`",
+            )
+            client.update_issue(created_number, body=patched_body)
+
+            mention_origin = "issue body" if source_comment_id == 0 else f"comment `{source_comment_id}`"
+            client.create_comment(
+                issue_number,
+                f"[autonomy] Routed mention ({mention_origin}) to task #{created_number} for `{login}` (question mode).",
+            )
+            return client.get_issue(created_number)
 
     return None
 
@@ -831,21 +925,28 @@ def task_prompt(issue: Dict[str, Any], meta: Dict[str, Any], *, agent: str, repo
     deliverable_lines = "\n".join([f"- {path}" for path in deliverables]) or "- follow task issue details"
     mode = str(meta.get("mode", "standard")).strip().lower()
     source_issue = int(meta.get("source_issue", 0))
+    source_comment_id = int(meta.get("source_comment_id", 0))
+    source_comment_url = str(meta.get("source_comment_url", "")).strip()
 
     if mode == "question" and source_issue > 0:
+        source_lines: List[str] = [f"Source issue to answer: #{source_issue}"]
+        if source_comment_id > 0:
+            source_lines.append(f"Source mention comment id: {source_comment_id}")
+        if source_comment_url:
+            source_lines.append(f"Source mention URL: {source_comment_url}")
         return "\n".join(
             [
                 f"You are agent '{agent}'.",
                 f"Repository: {repo}",
                 f"Task issue: #{issue['number']} ({issue['title']})",
-                f"Source issue to answer: #{source_issue}",
+                *source_lines,
                 f"Task ID: {task_id}",
                 "",
                 "Goal:",
                 issue.get("body", "").strip(),
                 "",
                 "Execution requirements:",
-                "1) Read the source issue and any relevant comments.",
+                "1) Read the source issue and the specific mention context first.",
                 f"2) Post a concise answer in source issue #{source_issue} using `gh issue comment`.",
                 "3) Do not create branches/commits/PRs unless source issue explicitly requests code changes.",
                 "4) In your final response, include the posted answer and comment URL.",
