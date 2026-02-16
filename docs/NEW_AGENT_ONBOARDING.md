@@ -18,6 +18,51 @@ This repo supports two collaboration modes:
 - Manual workflow fallback: `docs/COLLAB_WORKFLOW.md`
 - Task board conventions: `.tasks/README.md`
 
+## Copy/Paste Welcome Message (Odin)
+Send this to any new worker:
+
+```text
+Welcome to Trisolaris. You are being onboarded to the autonomous workflow.
+
+1) Read these docs first:
+- docs/NEW_AGENT_ONBOARDING.md
+- docs/GITHUB_SETUP.md
+- docs/AUTONOMY.md
+
+2) Bootstrap machine:
+cd ~/Documents
+git clone git@github.com:stormforge1/trisolaris.git Trisolaris
+cd ~/Documents/Trisolaris
+git checkout main
+git pull --rebase
+cp .mcp.template.json .mcp.json
+scripts/autonomy_bootstrap.sh
+
+3) Set your GitHub account (replace <your_github_user>):
+gh auth switch --hostname github.com --user <your_github_user>
+gh auth status
+gh repo view stormforge1/trisolaris --json nameWithOwner,viewerPermission
+
+4) Start your worker loop (replace <worker_name> with salomon|stormforge|kari):
+TOKEN="$(gh auth token)"
+mkdir -p .tasks/autonomy/runtime/daemon
+cat > .tasks/autonomy/runtime/daemon/<worker_name>.env <<EOF
+GH_TOKEN=$TOKEN
+EOF
+chmod 600 .tasks/autonomy/runtime/daemon/<worker_name>.env
+screen -S <worker_name>-worker -X quit >/dev/null 2>&1 || true
+screen -dmS <worker_name>-worker bash -lc "cd $HOME/Documents/Trisolaris && set -a && source .tasks/autonomy/runtime/daemon/<worker_name>.env && set +a && exec scripts/autonomy_agent_loop.sh <worker_name> >> .tasks/autonomy/runtime/daemon/<worker_name>-worker.log 2>&1"
+
+5) Verify:
+screen -ls
+python3 scripts/autonomy.py status
+
+Reply with:
+- your machine name
+- your GitHub user
+- output of `screen -ls`
+```
+
 ## 1) Machine Prerequisites
 Install and verify:
 
